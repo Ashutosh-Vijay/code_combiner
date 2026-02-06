@@ -13,6 +13,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   bool _isDragging = false;
+  final TextEditingController _searchCtrl = TextEditingController();
 
   @override
   Widget build(BuildContext context) {
@@ -26,6 +27,9 @@ class _HomePageState extends State<HomePage> {
     Color budgetColor = Colors.green;
     if (tokenUsage > 0.5) budgetColor = Colors.orange;
     if (tokenUsage > 0.8) budgetColor = Colors.red;
+
+    // Handle search text sync if needed (optional, but good for state reload)
+    // if (_searchCtrl.text != appState.searchFilter) { ... }
 
     return DropTarget(
       onDragDone: (details) {
@@ -74,12 +78,24 @@ class _HomePageState extends State<HomePage> {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      Tooltip(
-                        message: "Wraps output in XML tags",
-                        child: ToggleSwitch(
-                          checked: appState.wrapInXml,
-                          onChanged: appState.toggleXml,
-                          content: Text("XML", style: TextStyle(fontSize: 12, color: theme.resources.textFillColorSecondary)),
+                      
+                      // FORMAT SELECTOR
+                      Container(
+                        height: 28,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        decoration: BoxDecoration(
+                          color: theme.resources.controlFillColorTertiary,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: DropDownButton(
+                          title: Text(
+                            "FMT: ${appState.outputFormat.name.toUpperCase()}", 
+                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)
+                          ),
+                          items: OutputFormat.values.map((e) => MenuFlyoutItem(
+                            text: Text(e.name.toUpperCase()),
+                            onPressed: () => appState.setOutputFormat(e),
+                          )).toList(),
                         ),
                       ),
 
@@ -87,6 +103,7 @@ class _HomePageState extends State<HomePage> {
 
                       // Address Bar
                       Expanded(
+                        flex: 2,
                         child: Container(
                           height: 32,
                           padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -121,6 +138,29 @@ class _HomePageState extends State<HomePage> {
                           ),
                         ),
                       ),
+
+                      const SizedBox(width: 8),
+
+                      // NEW: SEARCH BAR
+                      SizedBox(
+                        width: 200,
+                        height: 32,
+                        child: TextBox(
+                          controller: _searchCtrl,
+                          placeholder: 'Search files...',
+                          onChanged: (v) => appState.setSearchFilter(v),
+                          suffix: _searchCtrl.text.isNotEmpty
+                              ? IconButton(
+                                  icon: const Icon(FluentIcons.clear, size: 10),
+                                  onPressed: () {
+                                    _searchCtrl.clear();
+                                    appState.setSearchFilter("");
+                                  },
+                                )
+                              : const Icon(FluentIcons.search, size: 12),
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -141,7 +181,6 @@ class _HomePageState extends State<HomePage> {
                               ),
                               child: Row(
                                 children: [
-                                  // MASTER CHECKBOX
                                   SizedBox(
                                     width: 24,
                                     child: Checkbox(
@@ -158,7 +197,7 @@ class _HomePageState extends State<HomePage> {
                                   
                                   const SizedBox(width: 12),
                                   
-                                  // RELOAD BUTTON (Replaces previous Exclude button)
+                                  // RELOAD BUTTON
                                   Tooltip(
                                     message: "Refresh file list",
                                     child: IconButton(
@@ -173,12 +212,12 @@ class _HomePageState extends State<HomePage> {
                                 ],
                               ),
                             ),
-                            // List
+                            // List (FIXED: Uses filteredFiles)
                             Expanded(
                               child: ListView.builder(
-                                itemCount: appState.files.length,
+                                itemCount: appState.filteredFiles.length,
                                 itemBuilder: (ctx, i) {
-                                  final file = appState.files[i];
+                                  final file = appState.filteredFiles[i];
                                   return HoverButton(
                                     onPressed: () => appState.toggleFileSelection(file, !file.isSelected),
                                     builder: (context, states) {
@@ -248,7 +287,7 @@ class _HomePageState extends State<HomePage> {
 
                 // --- 3. STATUS BAR ---
                 Container(
-                  height: 40,
+                  height: 48,
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   decoration: BoxDecoration(
                     color: (theme.navigationPaneTheme.backgroundColor ?? Colors.black).withValues(alpha: 0.95), 
@@ -270,13 +309,6 @@ class _HomePageState extends State<HomePage> {
 
                       const Spacer(),
 
-                      // SCANNER LOADING INDICATOR
-                      if (appState.isScanning) 
-                        const Padding(
-                          padding: EdgeInsets.only(right: 12),
-                          child: SizedBox(width: 12, height: 12, child: ProgressRing(strokeWidth: 2)),
-                        ),
-                      
                       // TOKEN BUDGET
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -298,22 +330,39 @@ class _HomePageState extends State<HomePage> {
                         ),
                       ),
                       
-                      const SizedBox(width: 12),
+                      const SizedBox(width: 16),
 
-                      // EXCLUDE UNSELECTED
-                      Tooltip(
-                        message: "Add unselected files to exclusion list",
-                        child: Button(
-                          onPressed: appState.selectedCount == appState.files.length 
-                              ? null 
-                              : () => appState.excludeUnselectedFiles(),
-                          child: const Text("Exclude Unselected"),
+                      // BUTTON: EXCLUDE UNSELECTED
+                      Button(
+                        onPressed: appState.selectedCount == appState.files.length 
+                            ? null 
+                            : () => appState.excludeUnselectedFiles(),
+                        child: const Row(
+                          children: [
+                            Icon(FluentIcons.remove_occurrence, size: 12),
+                            SizedBox(width: 6),
+                            Text("Exclude Unselected"),
+                          ],
                         ),
                       ),
 
                       const SizedBox(width: 8),
 
-                      // SAVE TO FILE
+                      // BUTTON: COPY TREE
+                      Button(
+                        onPressed: appState.files.isEmpty ? null : () => appState.copyFileTree(context),
+                        child: const Row(
+                          children: [
+                            Icon(FluentIcons.org, size: 12),
+                            SizedBox(width: 6),
+                            Text("Copy Tree"),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(width: 8),
+
+                      // BUTTON: SAVE FILE
                       Button(
                         onPressed: appState.files.isEmpty ? null : () => appState.generateOutput(context),
                         child: const Text("Save File"),
@@ -321,7 +370,7 @@ class _HomePageState extends State<HomePage> {
                       
                       const SizedBox(width: 8),
 
-                      // COPY BUTTON
+                      // MAIN ACTION: COPY CONTEXT
                       FilledButton(
                         onPressed: appState.files.isEmpty ? null : () => appState.copyToClipboard(context),
                         style: ButtonStyle(
@@ -330,10 +379,13 @@ class _HomePageState extends State<HomePage> {
                         ),
                         child: Row(
                           children: [
-                            const Icon(FluentIcons.copy, size: 12),
+                            if (appState.isProcessing)
+                              const SizedBox(width: 12, height: 12, child: ProgressRing(strokeWidth: 2, activeColor: Colors.white))
+                            else
+                              const Icon(FluentIcons.copy, size: 12),
                             const SizedBox(width: 6),
                             Text(
-                              appState.isProcessing ? "..." : "Copy", 
+                              appState.isProcessing ? "Processing..." : "Copy Context", 
                               style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)
                             ),
                           ],

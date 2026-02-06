@@ -9,6 +9,7 @@ import '../theme.dart';
 
 enum FileType { text, binary }
 enum ProjectType { standard, muleSoft, python, react }
+enum OutputFormat { plain, xml, markdown }
 
 class FileInfo {
   final String path;
@@ -37,7 +38,7 @@ class AppState extends ChangeNotifier {
   
   // -- Settings --
   ProjectType projectType = ProjectType.standard;
-  bool wrapInXml = true;
+  OutputFormat outputFormat = OutputFormat.xml;
   
   // Theme Settings
   ThemeMode _themeMode = ThemeMode.dark;
@@ -47,7 +48,6 @@ class AppState extends ChangeNotifier {
   // -- Exclusions State --
   bool useGitIgnore = true;
   
-  // CONSTANTS for Defaults
   static const List<String> defaultFolders = [
     '.git', '.vscode', '.idea', '.gradle', 
     'node_modules', 'build', 'dist', '.next', 
@@ -73,8 +73,6 @@ class AppState extends ChangeNotifier {
   ThemeFlavor get flavor => _flavor;
 
   // -- Data Access --
-  
-  // Returns filtered list for UI rendering
   List<FileInfo> get filteredFiles {
     if (_searchFilter.isEmpty) return files;
     final lowerTerm = _searchFilter.toLowerCase();
@@ -101,8 +99,7 @@ class AppState extends ChangeNotifier {
   Future<void> loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     
-    // Theme
-    int themeIdx = prefs.getInt('themeMode') ?? 1; // 1 = dark
+    int themeIdx = prefs.getInt('themeMode') ?? 1; 
     _themeMode = ThemeMode.values[themeIdx];
     
     _useGlass = prefs.getBool('useGlass') ?? true;
@@ -110,23 +107,23 @@ class AppState extends ChangeNotifier {
     int flavorIdx = prefs.getInt('flavor') ?? 0;
     _flavor = ThemeFlavor.values[flavorIdx];
 
-    // Config
     int projIdx = prefs.getInt('projectType') ?? 0;
     projectType = ProjectType.values[projIdx];
     
-    wrapInXml = prefs.getBool('wrapInXml') ?? true;
+    int fmtIdx = prefs.getInt('outputFormat') ?? 1; 
+    if (fmtIdx < OutputFormat.values.length) {
+      outputFormat = OutputFormat.values[fmtIdx];
+    }
+    
     useGitIgnore = prefs.getBool('useGitIgnore') ?? true;
 
-    // Exclusions
     excludedFolderNames = prefs.getStringList('excludedFolders') ?? List.from(defaultFolders);
     excludedPatterns = prefs.getStringList('excludedPatterns') ?? List.from(defaultPatterns);
     excludedFiles = prefs.getStringList('excludedFiles') ?? [];
 
-    // FIXED: Load Last Opened Folder
     String? lastPath = prefs.getString('lastFolder');
     if (lastPath != null && Directory(lastPath).existsSync()) {
       selectedPath = lastPath;
-      // Auto-scan on boot so you see files immediately
       scanFiles(); 
     }
 
@@ -140,10 +137,9 @@ class AppState extends ChangeNotifier {
     await prefs.setBool('useGlass', _useGlass);
     await prefs.setInt('flavor', _flavor.index);
     await prefs.setInt('projectType', projectType.index);
-    await prefs.setBool('wrapInXml', wrapInXml);
+    await prefs.setInt('outputFormat', outputFormat.index);
     await prefs.setBool('useGitIgnore', useGitIgnore);
     
-    // FIXED: Save Current Folder
     if (selectedPath != null) {
       await prefs.setString('lastFolder', selectedPath!);
     }
@@ -171,9 +167,6 @@ class AppState extends ChangeNotifier {
   }
 
   void toggleAllFiles(bool selected) {
-    // We toggle ALL files, not just filtered ones, or users might get confused.
-    // Alternatively, change to filteredFiles if you only want to select visible ones.
-    // For now, global toggle is safer context-wise.
     for (var f in files) {
       f.isSelected = selected;
     }
@@ -292,14 +285,13 @@ class AppState extends ChangeNotifier {
 
   void setPathFromDrop(String path) {
     selectedPath = path;
-    // Auto-save when path changes via drop
     _saveSettings();
     notifyListeners();
     scanFiles();
   }
 
-  void toggleXml(bool val) {
-    wrapInXml = val;
+  void setOutputFormat(OutputFormat format) {
+    outputFormat = format;
     _saveSettings();
     notifyListeners();
   }
@@ -318,7 +310,6 @@ class AppState extends ChangeNotifier {
     String? result = await FilePicker.platform.getDirectoryPath();
     if (result != null) {
       selectedPath = result;
-      // Auto-save when path changes via picker
       _saveSettings();
       notifyListeners();
       scanFiles();
@@ -347,6 +338,25 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // --- GENERATION ACTIONS ---
+
+  Future<void> copyFileTree(BuildContext context) async {
+    if (selectedPath == null || files.isEmpty) return;
+    final selectedFiles = files.where((f) => f.isSelected).toList();
+    if (selectedFiles.isEmpty) return;
+
+    try {
+      final tree = await compute(_generateTreeWorker, _TreeArgs(selectedFiles, selectedPath!));
+      await Clipboard.setData(ClipboardData(text: tree));
+      
+      if (!context.mounted) return;
+      _showDialog(context, "Tree Copied", "File tree copied to clipboard.");
+    } catch (e) {
+      if (!context.mounted) return;
+      _showDialog(context, "Error", e.toString());
+    }
+  }
+
   Future<void> copyToClipboard(BuildContext context) async {
     if (selectedPath == null || files.isEmpty) return;
     isProcessing = true;
@@ -354,12 +364,20 @@ class AppState extends ChangeNotifier {
 
     try {
       final filesToProcess = files.where((f) => f.isSelected).toList();
-      final content = await compute(_generateStringWorker, _ProcessArgs(filesToProcess, wrapInXml));
       
-      await Clipboard.setData(ClipboardData(text: content));
+      // 1. Generate Tree
+      final tree = await compute(_generateTreeWorker, _TreeArgs(filesToProcess, selectedPath!));
+      
+      // 2. Generate Content
+      final content = await compute(_generateStringWorker, _ProcessArgs(filesToProcess, outputFormat));
+      
+      // 3. Combine
+      final fullOutput = "$tree\n\n$content";
+      
+      await Clipboard.setData(ClipboardData(text: fullOutput));
       
       if (!context.mounted) return;
-      _showDialog(context, "Copied!", "Copied ${filesToProcess.length} files to clipboard.\n(${content.length} characters)");
+      _showDialog(context, "Copied!", "Context copied to clipboard.\n(${fullOutput.length} chars, includes file tree)");
     } catch (e) {
       if (!context.mounted) return;
       _showDialog(context, "Error", e.toString());
@@ -384,9 +402,19 @@ class AppState extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final content = await compute(_generateStringWorker, _ProcessArgs(filesToProcess, wrapInXml));
+      // 1. Generate Tree
+      final tree = await compute(_generateTreeWorker, _TreeArgs(filesToProcess, selectedPath!));
+      
+      // 2. Generate Content
+      final content = await compute(_generateStringWorker, _ProcessArgs(filesToProcess, outputFormat));
+      
+      // 3. Write to File
       final file = File(outputFile);
-      await file.writeAsString(content);
+      final sink = file.openWrite();
+      sink.write(tree);
+      sink.writeln("\n\n");
+      sink.write(content);
+      await sink.close();
       
       if (!context.mounted) return;
       _showDialog(context, "Success", "Saved to: $outputFile");
@@ -428,8 +456,14 @@ class _ScanArgs {
 
 class _ProcessArgs {
   final List<FileInfo> files;
-  final bool wrapXml;
-  _ProcessArgs(this.files, this.wrapXml);
+  final OutputFormat format; 
+  _ProcessArgs(this.files, this.format);
+}
+
+class _TreeArgs {
+  final List<FileInfo> files;
+  final String rootPath;
+  _TreeArgs(this.files, this.rootPath);
 }
 
 Future<List<FileInfo>> _scanWorker(_ScanArgs args) async {
@@ -528,15 +562,20 @@ Future<List<FileInfo>> _scanWorker(_ScanArgs args) async {
 Future<String> _generateStringWorker(_ProcessArgs args) async {
   final buffer = StringBuffer();
   
-  if (args.wrapXml) buffer.writeln("<codebase>");
+  if (args.format == OutputFormat.xml) buffer.writeln("<codebase>");
 
   for (var fileInfo in args.files) {
     final file = File(fileInfo.path);
     final displayPath = fileInfo.path; 
     
-    if (args.wrapXml) {
+    if (args.format == OutputFormat.xml) {
       buffer.writeln('<file path="$displayPath">');
       buffer.writeln("<![CDATA[");
+    } else if (args.format == OutputFormat.markdown) {
+      buffer.writeln("### File: $displayPath");
+      String ext = p.extension(displayPath).replaceAll('.', '');
+      if (ext.isEmpty) ext = "text";
+      buffer.writeln("```$ext");
     } else {
       buffer.writeln("=" * 80);
       buffer.writeln("File: $displayPath");
@@ -553,14 +592,33 @@ Future<String> _generateStringWorker(_ProcessArgs args) async {
       }
     }
     
-    if (args.wrapXml) {
+    if (args.format == OutputFormat.xml) {
       buffer.writeln("]]>");
       buffer.writeln('</file>');
+    } else if (args.format == OutputFormat.markdown) {
+      buffer.writeln("```\n");
     } else {
       buffer.writeln("\n\n");
     }
   }
   
-  if (args.wrapXml) buffer.writeln("</codebase>");
+  if (args.format == OutputFormat.xml) buffer.writeln("</codebase>");
+  return buffer.toString();
+}
+
+Future<String> _generateTreeWorker(_TreeArgs args) async {
+  final buffer = StringBuffer();
+  buffer.writeln("Project Tree:");
+  
+  final paths = args.files.map((f) => p.relative(f.path, from: args.rootPath)).toList();
+  paths.sort();
+
+  for (var path in paths) {
+    int depth = p.split(path).length - 1;
+    String indent = "  " * depth;
+    String icon = "📄"; 
+    buffer.writeln("$indent$icon $path");
+  }
+  
   return buffer.toString();
 }
