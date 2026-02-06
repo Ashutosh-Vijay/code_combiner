@@ -10,6 +10,12 @@ class SettingsPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final appState = context.watch<AppState>();
     
+    // Determine effective brightness to lock down UI
+    final isLightMode = FluentTheme.of(context).brightness == Brightness.light;
+    final isPitchBlack = appState.flavor == ThemeFlavor.pitchBlack;
+    // New: Check if we are using a Tinted Glass theme (Ocean/Forest)
+    final isTintedGlass = appState.flavor == ThemeFlavor.ocean || appState.flavor == ThemeFlavor.forest;
+
     return ScaffoldPage(
       header: const PageHeader(title: Text('Settings')),
       content: ListView(
@@ -25,13 +31,37 @@ class SettingsPage extends StatelessWidget {
             initiallyExpanded: true,
             content: Column(
               children: [
-                _buildFlavorRadio(appState, ThemeFlavor.standard, "Standard Glass", "Default Windows 11 Mica effect"),
+                _buildFlavorRadio(
+                  appState, 
+                  ThemeFlavor.standard, 
+                  "Standard", 
+                  "Default Glass / Solid",
+                  enabled: true // Always available
+                ),
                 const SizedBox(height: 8),
-                _buildFlavorRadio(appState, ThemeFlavor.pitchBlack, "Pitch Black", "Total void. No glass. High contrast."),
+                _buildFlavorRadio(
+                  appState, 
+                  ThemeFlavor.pitchBlack, 
+                  "Pitch Black", 
+                  "Total void. OLED Friendly.",
+                  enabled: !isLightMode // Disable in Light Mode
+                ),
                 const SizedBox(height: 8),
-                _buildFlavorRadio(appState, ThemeFlavor.ocean, "Ocean Depth", "Deep blue tinted glass."),
+                _buildFlavorRadio(
+                  appState, 
+                  ThemeFlavor.ocean, 
+                  "Ocean Depth", 
+                  "Deep blue tinted glass (Forces Glass ON).",
+                  enabled: !isLightMode // Disable in Light Mode
+                ),
                 const SizedBox(height: 8),
-                _buildFlavorRadio(appState, ThemeFlavor.forest, "Cyber Forest", "Emerald tinted glass."),
+                _buildFlavorRadio(
+                  appState, 
+                  ThemeFlavor.forest, 
+                  "Cyber Forest", 
+                  "Emerald tinted glass (Forces Glass ON).",
+                  enabled: !isLightMode // Disable in Light Mode
+                ),
               ],
             ),
           ),
@@ -59,7 +89,15 @@ class SettingsPage extends StatelessWidget {
                 const SizedBox(height: 8),
                 RadioButton(
                   checked: appState.themeMode == ThemeMode.light,
-                  onChanged: (v) => v == true ? appState.setThemeMode(ThemeMode.light) : null,
+                  onChanged: (v) {
+                    if (v == true) {
+                      appState.setThemeMode(ThemeMode.light);
+                      // Auto-revert to Standard if on a restricted flavor
+                      if (appState.flavor != ThemeFlavor.standard) {
+                        appState.setThemeFlavor(ThemeFlavor.standard);
+                      }
+                    }
+                  },
                   content: const Text("Light"),
                 ),
               ],
@@ -78,20 +116,41 @@ class SettingsPage extends StatelessWidget {
             ),
             child: Row(
               children: [
-                const Icon(FluentIcons.blur),
+                Icon(
+                  FluentIcons.blur, 
+                  // Grey out icon if the setting is locked (Pitch Black OR Tinted Glass)
+                  color: (isPitchBlack || isTintedGlass) ? Colors.grey : null
+                ),
                 const SizedBox(width: 12),
-                const Expanded(
+                Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text("Glass Effect (Mica)", style: TextStyle(fontWeight: FontWeight.bold)),
-                      Text("Disable this for solid colors (Performance++).", style: TextStyle(fontSize: 11)),
+                      Text(
+                        "Glass Effect (Mica)", 
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          // Grey out text if locked
+                          color: (isPitchBlack || isTintedGlass) ? Colors.grey : null
+                        )
+                      ),
+                      Text(
+                        // Dynamic description based on why it's locked
+                        isPitchBlack 
+                            ? "Disabled in Pitch Black mode." 
+                            : isTintedGlass 
+                                ? "Required for this theme flavor." 
+                                : "Makes the window background translucent.", 
+                        style: const TextStyle(fontSize: 11)
+                      ),
                     ],
                   ),
                 ),
                 ToggleSwitch(
-                  // Pitch Black forces glass off, so disable toggle if Pitch Black is active
-                  onChanged: appState.flavor == ThemeFlavor.pitchBlack ? null : appState.toggleGlass,
+                  // FIXED: Disable interaction if Pitch Black OR Tinted Glass (Ocean/Forest)
+                  // If it's Standard, you can toggle. Otherwise, it's locked.
+                  onChanged: (isPitchBlack || isTintedGlass) ? null : appState.toggleGlass,
+                  // Ensure visual state matches reality
                   checked: appState.useGlass,
                 )
               ],
@@ -102,16 +161,22 @@ class SettingsPage extends StatelessWidget {
     );
   }
 
-  Widget _buildFlavorRadio(AppState state, ThemeFlavor flavor, String title, String subtitle) {
-    return RadioButton(
-      checked: state.flavor == flavor,
-      onChanged: (v) => v == true ? state.setThemeFlavor(flavor) : null,
-      content: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
-          Text(subtitle, style: const TextStyle(fontSize: 11, color: Colors.grey)),
-        ],
+  Widget _buildFlavorRadio(AppState state, ThemeFlavor flavor, String title, String subtitle, {bool enabled = true}) {
+    return Opacity(
+      opacity: enabled ? 1.0 : 0.5,
+      child: RadioButton(
+        checked: state.flavor == flavor,
+        // Disable click if not enabled
+        onChanged: enabled ? (v) {
+          if (v == true) state.setThemeFlavor(flavor);
+        } : null,
+        content: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+            Text(subtitle, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+          ],
+        ),
       ),
     );
   }

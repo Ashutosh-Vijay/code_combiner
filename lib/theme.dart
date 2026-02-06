@@ -8,7 +8,10 @@ class AppTheme {
   
   static FluentThemeData getTheme(Brightness brightness, bool useGlass, ThemeFlavor flavor) {
     // Logic: If Light Mode -> Text is Black. If Dark Mode -> Text is White.
-    final textColor = brightness == Brightness.light ? Colors.black : Colors.white;
+    // FIXED: Pitch Black is basically "OLED Mode", so it must ALWAYS have white text, 
+    // even if the user forces "Light Mode" in settings.
+    final isPitchBlack = flavor == ThemeFlavor.pitchBlack;
+    final textColor = (brightness == Brightness.light && !isPitchBlack) ? Colors.black : Colors.white;
 
     TextStyle font(double size, FontWeight weight) => 
       GoogleFonts.jetBrainsMono(
@@ -36,9 +39,10 @@ class AppTheme {
       bgColor = const Color(0xFF000000);
     } else if (useGlass) {
       // Glass Mode with Tints
-      if (flavor == ThemeFlavor.ocean) {
+      // FIXED: Only apply Ocean/Forest tints in Dark Mode. Light Mode forces Standard Glass.
+      if (flavor == ThemeFlavor.ocean && brightness == Brightness.dark) {
         bgColor = const Color(0xFF001F3F).withValues(alpha: 0.3); // Deep Blue Tint
-      } else if (flavor == ThemeFlavor.forest) {
+      } else if (flavor == ThemeFlavor.forest && brightness == Brightness.dark) {
         bgColor = const Color(0xFF0B3B0B).withValues(alpha: 0.3); // Deep Green Tint
       } else {
         // Standard Glass
