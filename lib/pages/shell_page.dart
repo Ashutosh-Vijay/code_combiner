@@ -2,6 +2,7 @@ import 'package:fluent_ui/fluent_ui.dart';
 import 'home_page.dart';
 import 'utils_page.dart';
 import 'settings_page.dart';
+import 'exclusions_page.dart'; // Import new page
 
 class ShellPage extends StatefulWidget {
   const ShellPage({super.key});
@@ -30,6 +31,11 @@ class _ShellPageState extends State<ShellPage> {
             icon: const Icon(FluentIcons.toolbox),
             title: const Text("Utilities"),
             body: const UtilsPage(),
+          ),
+          PaneItem(
+            icon: const Icon(FluentIcons.filter),
+            title: const Text("Exclusions"),
+            body: ExclusionsPage(), // FIXED: Removed 'const' to satisfy the compiler
           ),
         ],
         footerItems: [
