@@ -44,11 +44,9 @@ class _HomePageState extends State<HomePage> {
           children: [
             Column(
               children: [
-                // --- 1. CLEAN TOOLBAR (Native Window Frame Friendly) ---
+                // --- 1. CLEAN TOOLBAR ---
                 Container(
                   height: 60,
-                  // FIXED: Added top padding (10) to push content down from native title bar interaction area
-                  // This fixes the overlap/double-line issue
                   padding: const EdgeInsets.fromLTRB(24, 12, 24, 12),
                   decoration: BoxDecoration(
                     color: theme.scaffoldBackgroundColor.withValues(alpha: 0.5),
@@ -143,15 +141,32 @@ class _HomePageState extends State<HomePage> {
                               ),
                               child: Row(
                                 children: [
+                                  // MASTER CHECKBOX
                                   SizedBox(
                                     width: 24,
                                     child: Checkbox(
-                                      checked: appState.selectedCount == appState.files.length,
-                                      onChanged: (v) {},
+                                      checked: appState.selectedCount == appState.files.length && appState.files.isNotEmpty 
+                                          ? true 
+                                          : (appState.selectedCount == 0 ? false : null),
+                                      onChanged: (v) {
+                                        appState.toggleAllFiles(v == true);
+                                      },
                                     ),
                                   ),
                                   const SizedBox(width: 12),
                                   Text("NAME", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: theme.resources.textFillColorTertiary)),
+                                  
+                                  const SizedBox(width: 12),
+                                  
+                                  // RELOAD BUTTON (Replaces previous Exclude button)
+                                  Tooltip(
+                                    message: "Refresh file list",
+                                    child: IconButton(
+                                      icon: Icon(FluentIcons.refresh, size: 12, color: theme.accentColor),
+                                      onPressed: appState.isScanning ? null : appState.scanFiles,
+                                    ),
+                                  ),
+
                                   const Spacer(),
                                   Text("SIZE", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: theme.resources.textFillColorTertiary)),
                                   const SizedBox(width: 60), 
@@ -236,7 +251,6 @@ class _HomePageState extends State<HomePage> {
                   height: 40,
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   decoration: BoxDecoration(
-                    // FIXED: Fallback color check to prevent null error
                     color: (theme.navigationPaneTheme.backgroundColor ?? Colors.black).withValues(alpha: 0.95), 
                     border: Border(top: BorderSide(color: theme.resources.cardStrokeColorDefault.withValues(alpha: 0.2))),
                   ),
@@ -256,12 +270,14 @@ class _HomePageState extends State<HomePage> {
 
                       const Spacer(),
 
+                      // SCANNER LOADING INDICATOR
                       if (appState.isScanning) 
                         const Padding(
                           padding: EdgeInsets.only(right: 12),
                           child: SizedBox(width: 12, height: 12, child: ProgressRing(strokeWidth: 2)),
                         ),
                       
+                      // TOKEN BUDGET
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                         decoration: BoxDecoration(
@@ -284,6 +300,28 @@ class _HomePageState extends State<HomePage> {
                       
                       const SizedBox(width: 12),
 
+                      // EXCLUDE UNSELECTED
+                      Tooltip(
+                        message: "Add unselected files to exclusion list",
+                        child: Button(
+                          onPressed: appState.selectedCount == appState.files.length 
+                              ? null 
+                              : () => appState.excludeUnselectedFiles(),
+                          child: const Text("Exclude Unselected"),
+                        ),
+                      ),
+
+                      const SizedBox(width: 8),
+
+                      // SAVE TO FILE
+                      Button(
+                        onPressed: appState.files.isEmpty ? null : () => appState.generateOutput(context),
+                        child: const Text("Save File"),
+                      ),
+                      
+                      const SizedBox(width: 8),
+
+                      // COPY BUTTON
                       FilledButton(
                         onPressed: appState.files.isEmpty ? null : () => appState.copyToClipboard(context),
                         style: ButtonStyle(
@@ -295,7 +333,7 @@ class _HomePageState extends State<HomePage> {
                             const Icon(FluentIcons.copy, size: 12),
                             const SizedBox(width: 6),
                             Text(
-                              appState.isProcessing ? "PROCESSING..." : "COPY", 
+                              appState.isProcessing ? "..." : "Copy", 
                               style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)
                             ),
                           ],

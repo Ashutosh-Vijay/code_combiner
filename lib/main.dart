@@ -25,25 +25,29 @@ void main() async {
 
   await SystemTheme.accentColor.load();
 
-  runApp(const MyApp());
+  // Initialize State (Load settings)
+  final appState = AppState();
+  await appState.loadSettings();
+
+  runApp(MyApp(appState: appState));
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final AppState appState;
+  const MyApp({super.key, required this.appState});
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) => AppState(),
+    return ChangeNotifierProvider.value(
+      value: appState,
       child: Consumer<AppState>(
-        builder: (context, appState, _) {
+        builder: (context, state, _) {
           return FluentApp(
             title: 'Code Combiner',
-            themeMode: appState.themeMode, 
+            themeMode: state.themeMode, 
             debugShowCheckedModeBanner: false,
-            // FIXED: Passing the selected FLAVOR to the theme engine
-            darkTheme: AppTheme.getTheme(Brightness.dark, appState.useGlass, appState.flavor),
-            theme: AppTheme.getTheme(Brightness.light, appState.useGlass, appState.flavor),
+            darkTheme: AppTheme.getTheme(Brightness.dark, state.useGlass, state.flavor),
+            theme: AppTheme.getTheme(Brightness.light, state.useGlass, state.flavor),
             home: const ShellPage(),
           );
         },
