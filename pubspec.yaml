@@ -1,5 +1,5 @@
 name: code_combiner
-description: "A new Flutter project."
+description: "A high-performance, aesthetically pleasing utility designed to prepare massive codebases for Large Language Model (LLM) context windows. Built with Flutter, Mica/Glass UI, and pure rage against bad tooling."
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -19,7 +19,7 @@ dependencies:
   system_theme: ^3.2.0
   
   # 🚀 Phase 1: The Glass Stack
-  bitsdojo_window: ^0.1.6 
+  bitsdojo_window: ^0.1.6
   flutter_acrylic: ^1.0.0
   google_fonts: ^6.1.0
   desktop_drop: ^0.4.0
@@ -27,10 +27,24 @@ dependencies:
   # 🧠 Phase 2: Memory
   shared_preferences: ^2.2.2
 
+  # 🔗 Phase 4: Identity
+  url_launcher: ^6.2.5
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  # 🎨 Icon Gen
+  flutter_launcher_icons: ^0.13.1
 
 flutter:
   uses-material-design: true
+
+# --- ICON CONFIGURATION ---
+flutter_launcher_icons:
+  android: false
+  ios: false
+  image_path: "assets/app.ico"
+  windows:
+    generate: true
+    icon_size: 256

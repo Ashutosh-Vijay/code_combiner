@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -21,6 +22,7 @@ class FileInfo {
 
   String get fileName => p.basename(path);
   
+  // Rough token estimate: ~4 chars per token for code/text
   int get estimatedTokens => type == FileType.text ? (size / 4).ceil() : 0;
   
   String get statString {
@@ -30,24 +32,155 @@ class FileInfo {
   }
 }
 
+// -----------------------------------------------------------------------------
+// 1. SETTINGS SERVICE (Persistence Logic)
+// -----------------------------------------------------------------------------
+class SettingsService {
+  static const String _configFileName = ".exclusion_settings.json";
+
+  // Load Global App Settings
+  static Future<void> loadGlobalSettings(AppState state) async {
+    final prefs = await SharedPreferences.getInstance();
+    
+    int themeIdx = prefs.getInt('themeMode') ?? 1; // Default Dark
+    state._themeMode = ThemeMode.values[themeIdx];
+    
+    state._useGlass = prefs.getBool('useGlass') ?? true;
+    
+    int flavorIdx = prefs.getInt('flavor') ?? 0;
+    state._flavor = ThemeFlavor.values[flavorIdx];
+    
+    // Check if we have a last opened folder
+    String? lastPath = prefs.getString('lastFolder');
+    if (lastPath != null && Directory(lastPath).existsSync()) {
+      state.selectedPath = lastPath;
+    }
+  }
+
+  static Future<void> saveGlobalTheme(AppState state) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('themeMode', state.themeMode.index);
+    await prefs.setBool('useGlass', state.useGlass);
+    await prefs.setInt('flavor', state.flavor.index);
+  }
+
+  // Load Project-Specific Config (or fall back to global defaults)
+  static Future<void> loadProjectConfig(AppState state) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // 1. Try to load from .exclusion_settings.json in the project root
+    if (state.selectedPath != null) {
+      final file = File(p.join(state.selectedPath!, _configFileName));
+      if (await file.exists()) {
+        try {
+          final content = await file.readAsString();
+          final Map<String, dynamic> data = jsonDecode(content);
+          
+          if (data.containsKey('projectType')) state.projectType = ProjectType.values[data['projectType']];
+          if (data.containsKey('outputFormat')) state.outputFormat = OutputFormat.values[data['outputFormat']];
+          if (data.containsKey('useGitIgnore')) state.useGitIgnore = data['useGitIgnore'];
+          if (data.containsKey('excludedFolderNames')) state.excludedFolderNames = List<String>.from(data['excludedFolderNames']);
+          if (data.containsKey('excludedPatterns')) state.excludedPatterns = List<String>.from(data['excludedPatterns']);
+          if (data.containsKey('excludedFiles')) state.excludedFiles = List<String>.from(data['excludedFiles']);
+          
+          return; // Loaded successfully, skip fallback
+        } catch (e) {
+          debugPrint("Failed to load project config: $e");
+        }
+      }
+    }
+
+    // 2. Fallback: Load from SharedPreferences (Global Defaults)
+    int projIdx = prefs.getInt('projectType') ?? 0;
+    state.projectType = ProjectType.values[projIdx];
+    
+    int fmtIdx = prefs.getInt('outputFormat') ?? 1;
+    if (fmtIdx < OutputFormat.values.length) state.outputFormat = OutputFormat.values[fmtIdx];
+    
+    state.useGitIgnore = prefs.getBool('useGitIgnore') ?? true;
+    state.excludedFolderNames = prefs.getStringList('excludedFolders') ?? List.from(AppState.defaultFolders);
+    state.excludedPatterns = prefs.getStringList('excludedPatterns') ?? List.from(AppState.defaultPatterns);
+    state.excludedFiles = prefs.getStringList('excludedFiles') ?? [];
+  }
+
+  static Future<void> saveProjectConfig(AppState state) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // Always update global fallback/cache
+    await prefs.setInt('projectType', state.projectType.index);
+    await prefs.setInt('outputFormat', state.outputFormat.index);
+    await prefs.setBool('useGitIgnore', state.useGitIgnore);
+    if (state.selectedPath != null) await prefs.setString('lastFolder', state.selectedPath!);
+    await prefs.setStringList('excludedFolders', state.excludedFolderNames);
+    await prefs.setStringList('excludedPatterns', state.excludedPatterns);
+    await prefs.setStringList('excludedFiles', state.excludedFiles);
+
+    // Save to local project file
+    if (state.selectedPath != null) {
+      final data = {
+        'projectType': state.projectType.index,
+        'outputFormat': state.outputFormat.index,
+        'useGitIgnore': state.useGitIgnore,
+        'excludedFolderNames': state.excludedFolderNames,
+        'excludedPatterns': state.excludedPatterns,
+        'excludedFiles': state.excludedFiles,
+      };
+      
+      try {
+        final file = File(p.join(state.selectedPath!, _configFileName));
+        await file.writeAsString(jsonEncode(data));
+      } catch (e) {
+        debugPrint("Failed to save local config: $e");
+      }
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 2. FILE SERVICE (Heavy Lifting)
+// -----------------------------------------------------------------------------
+class FileService {
+  static Future<List<FileInfo>> scan(AppState state) async {
+    if (state.selectedPath == null) return [];
+    return await compute(_scanWorker, _ScanArgs(
+      state.selectedPath!, 
+      state.projectType,
+      state.excludedFolderNames,
+      state.excludedPatterns,
+      state.excludedFiles,
+      state.useGitIgnore
+    ));
+  }
+
+  static Future<String> generateContent(List<FileInfo> files, OutputFormat format) async {
+    return await compute(_generateStringWorker, _ProcessArgs(files, format));
+  }
+
+  static Future<String> generateTree(List<FileInfo> files, String rootPath) async {
+    return await compute(_generateTreeWorker, _TreeArgs(files, rootPath));
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 3. APP STATE (The Manager)
+// -----------------------------------------------------------------------------
 class AppState extends ChangeNotifier {
   String? selectedPath;
   List<FileInfo> files = [];
   bool isScanning = false;
   bool isProcessing = false;
   
-  // -- Settings --
-  ProjectType projectType = ProjectType.standard;
-  OutputFormat outputFormat = OutputFormat.xml;
-  
-  // Theme Settings
+  // -- App Settings --
   ThemeMode _themeMode = ThemeMode.dark;
   bool _useGlass = true;
   ThemeFlavor _flavor = ThemeFlavor.standard;
 
-  // -- Exclusions State --
+  // -- Project Config --
+  ProjectType projectType = ProjectType.standard;
+  OutputFormat outputFormat = OutputFormat.xml;
   bool useGitIgnore = true;
   
+  // Defaults
   static const List<String> defaultFolders = [
     '.git', '.vscode', '.idea', '.gradle', 
     'node_modules', 'build', 'dist', '.next', 
@@ -94,62 +227,21 @@ class AppState extends ChangeNotifier {
     return "${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB";
   }
 
-  // --- PERSISTENCE ---
+  // --- ACTIONS ---
   
   Future<void> loadSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    
-    int themeIdx = prefs.getInt('themeMode') ?? 1; 
-    _themeMode = ThemeMode.values[themeIdx];
-    
-    _useGlass = prefs.getBool('useGlass') ?? true;
-    
-    int flavorIdx = prefs.getInt('flavor') ?? 0;
-    _flavor = ThemeFlavor.values[flavorIdx];
-
-    int projIdx = prefs.getInt('projectType') ?? 0;
-    projectType = ProjectType.values[projIdx];
-    
-    int fmtIdx = prefs.getInt('outputFormat') ?? 1; 
-    if (fmtIdx < OutputFormat.values.length) {
-      outputFormat = OutputFormat.values[fmtIdx];
+    await SettingsService.loadGlobalSettings(this);
+    if (selectedPath != null) {
+      await SettingsService.loadProjectConfig(this);
+      scanFiles();
     }
-    
-    useGitIgnore = prefs.getBool('useGitIgnore') ?? true;
-
-    excludedFolderNames = prefs.getStringList('excludedFolders') ?? List.from(defaultFolders);
-    excludedPatterns = prefs.getStringList('excludedPatterns') ?? List.from(defaultPatterns);
-    excludedFiles = prefs.getStringList('excludedFiles') ?? [];
-
-    String? lastPath = prefs.getString('lastFolder');
-    if (lastPath != null && Directory(lastPath).existsSync()) {
-      selectedPath = lastPath;
-      scanFiles(); 
-    }
-
     notifyListeners();
   }
 
-  Future<void> _saveSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    
-    await prefs.setInt('themeMode', _themeMode.index);
-    await prefs.setBool('useGlass', _useGlass);
-    await prefs.setInt('flavor', _flavor.index);
-    await prefs.setInt('projectType', projectType.index);
-    await prefs.setInt('outputFormat', outputFormat.index);
-    await prefs.setBool('useGitIgnore', useGitIgnore);
-    
-    if (selectedPath != null) {
-      await prefs.setString('lastFolder', selectedPath!);
-    }
-    
-    await prefs.setStringList('excludedFolders', excludedFolderNames);
-    await prefs.setStringList('excludedPatterns', excludedPatterns);
-    await prefs.setStringList('excludedFiles', excludedFiles);
+  void _save() {
+    SettingsService.saveProjectConfig(this);
+    notifyListeners(); // Notify listeners to update UI
   }
-
-  // -- Actions --
 
   void setSearchFilter(String val) {
     _searchFilter = val;
@@ -161,8 +253,7 @@ class AppState extends ChangeNotifier {
     excludedPatterns = List.from(defaultPatterns);
     excludedFiles.clear();
     useGitIgnore = true;
-    _saveSettings();
-    notifyListeners();
+    _save();
     if (selectedPath != null) scanFiles();
   }
 
@@ -176,21 +267,19 @@ class AppState extends ChangeNotifier {
   void excludeUnselectedFiles() {
     final unselected = files.where((f) => !f.isSelected).toList();
     if (unselected.isEmpty) return;
-
     for (var f in unselected) {
       if (!excludedFiles.contains(f.path)) {
         excludedFiles.insert(0, f.path);
       }
     }
-    _saveSettings();
+    _save();
     scanFiles();
   }
 
   void addExcludedFolder(String folder) {
     if (!excludedFolderNames.contains(folder)) {
       excludedFolderNames.insert(0, folder);
-      _saveSettings();
-      notifyListeners();
+      _save();
       if (selectedPath != null) scanFiles();
     }
   }
@@ -205,24 +294,21 @@ class AppState extends ChangeNotifier {
 
   void removeExcludedFolder(String folder) {
     excludedFolderNames.remove(folder);
-    _saveSettings();
-    notifyListeners();
+    _save();
     if (selectedPath != null) scanFiles();
   }
 
   void addExcludedPattern(String pattern) {
     if (!excludedPatterns.contains(pattern)) {
       excludedPatterns.insert(0, pattern);
-      _saveSettings();
-      notifyListeners();
+      _save();
       if (selectedPath != null) scanFiles();
     }
   }
 
   void removeExcludedPattern(String pattern) {
     excludedPatterns.remove(pattern);
-    _saveSettings();
-    notifyListeners();
+    _save();
     if (selectedPath != null) scanFiles();
   }
 
@@ -232,8 +318,7 @@ class AppState extends ChangeNotifier {
       String path = result.files.single.path!;
       if (!excludedFiles.contains(path)) {
         excludedFiles.insert(0, path);
-        _saveSettings();
-        notifyListeners();
+        _save();
         if (selectedPath != null) scanFiles();
       }
     }
@@ -241,27 +326,26 @@ class AppState extends ChangeNotifier {
 
   void removeExcludedFile(String path) {
     excludedFiles.remove(path);
-    _saveSettings();
-    notifyListeners();
+    _save();
     if (selectedPath != null) scanFiles();
   }
 
   void toggleGitIgnore(bool val) {
     useGitIgnore = val;
-    _saveSettings();
-    notifyListeners();
+    _save();
     if (selectedPath != null) scanFiles();
   }
 
+  // Global Settings Actions
   void setThemeMode(ThemeMode mode) {
     _themeMode = mode;
-    _saveSettings();
+    SettingsService.saveGlobalTheme(this);
     notifyListeners();
   }
 
   void toggleGlass(bool value) {
     _useGlass = value;
-    _saveSettings();
+    SettingsService.saveGlobalTheme(this);
     notifyListeners();
   }
 
@@ -272,28 +356,29 @@ class AppState extends ChangeNotifier {
     } else {
       _useGlass = true;
     }
-    _saveSettings();
+    SettingsService.saveGlobalTheme(this);
     notifyListeners();
   }
 
+  // Project Settings Actions
   void setProjectType(ProjectType type) {
     projectType = type;
-    _saveSettings();
-    notifyListeners();
+    _save();
     if (selectedPath != null) scanFiles();
   }
 
   void setPathFromDrop(String path) {
     selectedPath = path;
-    _saveSettings();
-    notifyListeners();
-    scanFiles();
+    // Load config specific to this new path
+    SettingsService.loadProjectConfig(this).then((_) {
+      _save(); 
+      scanFiles();
+    });
   }
 
   void setOutputFormat(OutputFormat format) {
     outputFormat = format;
-    _saveSettings();
-    notifyListeners();
+    _save();
   }
 
   void removeFile(FileInfo file) {
@@ -310,8 +395,8 @@ class AppState extends ChangeNotifier {
     String? result = await FilePicker.platform.getDirectoryPath();
     if (result != null) {
       selectedPath = result;
-      _saveSettings();
-      notifyListeners();
+      await SettingsService.loadProjectConfig(this);
+      _save();
       scanFiles();
     }
   }
@@ -322,14 +407,7 @@ class AppState extends ChangeNotifier {
     notifyListeners();
 
     try {
-      files = await compute(_scanWorker, _ScanArgs(
-        selectedPath!, 
-        projectType,
-        excludedFolderNames,
-        excludedPatterns,
-        excludedFiles,
-        useGitIgnore
-      ));
+      files = await FileService.scan(this);
     } catch (e) {
       debugPrint("Error scanning: $e");
     }
@@ -338,17 +416,14 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // --- GENERATION ACTIONS ---
-
   Future<void> copyFileTree(BuildContext context) async {
     if (selectedPath == null || files.isEmpty) return;
     final selectedFiles = files.where((f) => f.isSelected).toList();
     if (selectedFiles.isEmpty) return;
 
     try {
-      final tree = await compute(_generateTreeWorker, _TreeArgs(selectedFiles, selectedPath!));
+      final tree = await FileService.generateTree(selectedFiles, selectedPath!);
       await Clipboard.setData(ClipboardData(text: tree));
-      
       if (!context.mounted) return;
       _showDialog(context, "Tree Copied", "File tree copied to clipboard.");
     } catch (e) {
@@ -364,14 +439,8 @@ class AppState extends ChangeNotifier {
 
     try {
       final filesToProcess = files.where((f) => f.isSelected).toList();
-      
-      // 1. Generate Tree
-      final tree = await compute(_generateTreeWorker, _TreeArgs(filesToProcess, selectedPath!));
-      
-      // 2. Generate Content
-      final content = await compute(_generateStringWorker, _ProcessArgs(filesToProcess, outputFormat));
-      
-      // 3. Combine
+      final tree = await FileService.generateTree(filesToProcess, selectedPath!);
+      final content = await FileService.generateContent(filesToProcess, outputFormat);
       final fullOutput = "$tree\n\n$content";
       
       await Clipboard.setData(ClipboardData(text: fullOutput));
@@ -402,13 +471,9 @@ class AppState extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // 1. Generate Tree
-      final tree = await compute(_generateTreeWorker, _TreeArgs(filesToProcess, selectedPath!));
+      final tree = await FileService.generateTree(filesToProcess, selectedPath!);
+      final content = await FileService.generateContent(filesToProcess, outputFormat);
       
-      // 2. Generate Content
-      final content = await compute(_generateStringWorker, _ProcessArgs(filesToProcess, outputFormat));
-      
-      // 3. Write to File
       final file = File(outputFile);
       final sink = file.openWrite();
       sink.write(tree);
@@ -441,7 +506,9 @@ class AppState extends ChangeNotifier {
   }
 }
 
-// -- Isolates --
+// -----------------------------------------------------------------------------
+// WORKERS (Isolates) & HELPERS
+// -----------------------------------------------------------------------------
 
 class _ScanArgs {
   final String dir;
@@ -466,10 +533,22 @@ class _TreeArgs {
   _TreeArgs(this.files, this.rootPath);
 }
 
+// --- HELPER: Glob Matcher (The Real Deal) ---
+bool _matchesGlob(String text, String pattern) {
+  // Convert basic glob to regex
+  // Escape special regex chars except * and ?
+  var escaped = RegExp.escape(pattern)
+      .replaceAll(r'\*', '.*')
+      .replaceAll(r'\?', '.');
+  
+  // ^ and $ anchors to match whole string
+  final regExp = RegExp('^$escaped\$', caseSensitive: false);
+  return regExp.hasMatch(text);
+}
+
 Future<List<FileInfo>> _scanWorker(_ScanArgs args) async {
   final dir = Directory(args.dir);
   List<FileInfo> results = [];
-  
   bool isWindows = Platform.isWindows;
   
   Set<String> ignoredDirNames = args.excludedFolders
@@ -486,21 +565,8 @@ Future<List<FileInfo>> _scanWorker(_ScanArgs args) async {
     ignoredDirNames.addAll(['venv', '.venv', 'env', '__pycache__', 'htmlcov', '.pytest_cache']);
   }
 
-  bool matchesPattern(String fileName, List<String> patterns) {
-    String name = isWindows ? fileName.toLowerCase() : fileName;
-    for (var pat in patterns) {
-      String p = isWindows ? pat.toLowerCase() : pat;
-      if (p.startsWith('*.')) {
-        if (name.endsWith(p.substring(1))) return true;
-      } else if (p.startsWith('*')) {
-        if (name.endsWith(p.substring(1))) return true;
-      } else if (p == name) {
-        return true;
-      }
-    }
-    return false;
-  }
-
+  // --- GITIGNORE PARSING (Improved) ---
+  List<String> gitIgnorePatterns = [];
   if (args.useGitIgnore) {
     final gitIgnoreFile = File(p.join(args.dir, '.gitignore'));
     if (gitIgnoreFile.existsSync()) {
@@ -509,12 +575,37 @@ Future<List<FileInfo>> _scanWorker(_ScanArgs args) async {
         for (var line in lines) {
           line = line.trim();
           if (line.isEmpty || line.startsWith('#')) continue;
-          String clean = line.replaceAll('/', '');
-          if (!clean.contains('*')) {
-             ignoredDirNames.add(isWindows ? clean.toLowerCase() : clean);
+          
+          // Basic handling: strip leading slash
+          if (line.startsWith('/')) line = line.substring(1);
+          // If it ends with slash, it's a directory
+          if (line.endsWith('/')) {
+            ignoredDirNames.add(isWindows ? line.replaceAll('/', '').toLowerCase() : line.replaceAll('/', ''));
+          } else if (!line.contains('*') && !line.contains('!')) {
+            // Simple file/folder name
+             ignoredDirNames.add(isWindows ? line.toLowerCase() : line);
+          } else {
+            // It's a pattern
+            gitIgnorePatterns.add(line);
           }
         }
       } catch (_) {}
+    }
+  }
+
+  // --- HELPER: True Binary Check ---
+  bool isBinary(File f) {
+    RandomAccessFile? raf;
+    try {
+      raf = f.openSync();
+      // Read first 8kb. If 0x00 is found, it's binary.
+      final bytes = raf.readSync(8000); 
+      raf.closeSync(); 
+      if (bytes.contains(0)) return true;
+      return false;
+    } catch (e) {
+      try { raf?.closeSync(); } catch (_) {}
+      return true; // Assume binary if unreadable
     }
   }
 
@@ -524,32 +615,39 @@ Future<List<FileInfo>> _scanWorker(_ScanArgs args) async {
         String fullPath = entity.path;
         String comparePath = isWindows ? fullPath.toLowerCase() : fullPath;
         
+        // 1. Absolute File Exclusion
         if (ignoredFilePaths.contains(comparePath)) continue;
 
         String relPath = p.relative(fullPath, from: args.dir);
         List<String> parts = p.split(relPath);
 
+        // 2. Folder Exclusion (Name match in path)
         bool isIgnored = parts.any((part) {
           String pName = isWindows ? part.toLowerCase() : part;
           return ignoredDirNames.contains(pName);
         });
-        
         if (isIgnored) continue;
 
         String name = p.basename(fullPath);
-        if (matchesPattern(name, args.excludedPatterns)) continue;
-
-        const binaryExts = {
-          '.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.bmp',
-          '.exe', '.dll', '.so', '.dylib', '.bin',
-          '.zip', '.tar', '.gz', '.7z', '.rar',
-          '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt',
-          '.pyc', '.pyo', '.pyd', '.class', '.jar', '.war',
-          '.db', '.sqlite', '.ds_store', 'thumbs.db'
-        };
         
-        String ext = p.extension(fullPath).toLowerCase();
-        FileType type = binaryExts.contains(ext) ? FileType.binary : FileType.text;
+        // 3. User Patterns
+        bool patternMatched = false;
+        for (var pat in args.excludedPatterns) {
+           if (_matchesGlob(name, pat)) { patternMatched = true; break; }
+        }
+        if (patternMatched) continue;
+
+        // 4. GitIgnore Patterns
+        for (var pat in gitIgnorePatterns) {
+           if (_matchesGlob(name, pat) || _matchesGlob(relPath, pat)) { patternMatched = true; break; }
+        }
+        if (patternMatched) continue;
+        
+        // 5. Config File
+        if (name == ".exclusion_settings.json") continue;
+
+        // 6. TRUE BINARY CHECK
+        FileType type = isBinary(entity) ? FileType.binary : FileType.text;
         
         results.add(FileInfo(fullPath, entity.lengthSync(), type));
       }
@@ -561,7 +659,6 @@ Future<List<FileInfo>> _scanWorker(_ScanArgs args) async {
 
 Future<String> _generateStringWorker(_ProcessArgs args) async {
   final buffer = StringBuffer();
-  
   if (args.format == OutputFormat.xml) buffer.writeln("<codebase>");
 
   for (var fileInfo in args.files) {
@@ -609,16 +706,12 @@ Future<String> _generateStringWorker(_ProcessArgs args) async {
 Future<String> _generateTreeWorker(_TreeArgs args) async {
   final buffer = StringBuffer();
   buffer.writeln("Project Tree:");
-  
   final paths = args.files.map((f) => p.relative(f.path, from: args.rootPath)).toList();
   paths.sort();
-
   for (var path in paths) {
     int depth = p.split(path).length - 1;
     String indent = "  " * depth;
-    String icon = "📄"; 
-    buffer.writeln("$indent$icon $path");
+    buffer.writeln("$indent- $path");
   }
-  
   return buffer.toString();
 }
