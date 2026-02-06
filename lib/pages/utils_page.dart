@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:flutter/foundation.dart'; // For compute
 import 'package:flutter/services.dart';
 
 class UtilsPage extends StatefulWidget {
@@ -50,6 +51,36 @@ class _UtilsPageState extends State<UtilsPage> {
     }
   }
 
+  // --- WORKER FUNCTIONS (Must be static or top-level) ---
+  static Future<String> _encodeTextWorker(String text) async {
+    return base64Encode(utf8.encode(text));
+  }
+
+  static Future<String> _encodeFileWorker(String path) async {
+    final file = File(path);
+    final bytes = await file.readAsBytes();
+    return base64Encode(bytes);
+  }
+
+  static Future<void> _saveEncodedTextWorker(List<String> args) async {
+    final text = args[0];
+    final path = args[1];
+    final encoded = base64Encode(utf8.encode(text));
+    await File(path).writeAsString(encoded);
+  }
+
+  static Future<void> _streamEncodeFileWorker(List<String> args) async {
+    final inputPath = args[0];
+    final outputPath = args[1];
+    final inputFile = File(inputPath);
+    final output = File(outputPath);
+    final sink = output.openWrite();
+    await inputFile.openRead()
+        .transform(base64.encoder)
+        .transform(utf8.encoder)
+        .pipe(sink);
+  }
+
   Future<void> _copyEncodedToClipboard() async {
     final textInput = _encodeCtrl.text;
     final hasText = textInput.isNotEmpty;
@@ -62,7 +93,8 @@ class _UtilsPageState extends State<UtilsPage> {
     try {
       String base64Str;
       if (hasText) {
-        base64Str = base64Encode(utf8.encode(textInput));
+        // Offload CPU work
+        base64Str = await compute(_encodeTextWorker, textInput);
         setState(() => _status = "Encoded text copied! (${base64Str.length} chars)");
       } else {
         File f = File(_selectedFilePath!);
@@ -70,8 +102,8 @@ class _UtilsPageState extends State<UtilsPage> {
         if (len > 10 * 1024 * 1024) { 
            throw "File too big for Clipboard (>10MB). Save to file instead.";
         }
-        List<int> bytes = await f.readAsBytes();
-        base64Str = base64Encode(bytes);
+        // Offload File IO + CPU work
+        base64Str = await compute(_encodeFileWorker, _selectedFilePath!);
         setState(() => _status = "Encoded file copied! (${base64Str.length} chars)");
       }
       await Clipboard.setData(ClipboardData(text: base64Str));
@@ -100,19 +132,10 @@ class _UtilsPageState extends State<UtilsPage> {
 
     try {
       if (hasText) {
-        String base64Str = base64Encode(utf8.encode(textInput));
-        await File(outputFile).writeAsString(base64Str);
+        await compute(_saveEncodedTextWorker, [textInput, outputFile]);
         setState(() => _status = "Saved encoded text to $outputFile");
       } else {
-        final inputFile = File(_selectedFilePath!);
-        final output = File(outputFile);
-        final sink = output.openWrite();
-        
-        await inputFile.openRead()
-            .transform(base64.encoder) 
-            .transform(utf8.encoder)   
-            .pipe(sink);                
-            
+        await compute(_streamEncodeFileWorker, [_selectedFilePath!, outputFile]);
         setState(() => _status = "Saved file output to $outputFile");
       }
     } catch (e) {
@@ -120,6 +143,38 @@ class _UtilsPageState extends State<UtilsPage> {
     } finally {
       setState(() => _isWorking = false);
     }
+  }
+
+  // --- DECODER WORKERS ---
+  static Future<String> _decodeTextWorker(String input) async {
+    final bytes = base64Decode(input);
+    return utf8.decode(bytes);
+  }
+
+  static Future<String> _decodeFileWorker(String path) async {
+    final file = File(path);
+    String content = await file.readAsString();
+    content = content.replaceAll(RegExp(r'\s'), ''); // Clean
+    final bytes = base64Decode(content);
+    return utf8.decode(bytes);
+  }
+
+  static Future<void> _saveDecodedBytesWorker(List<dynamic> args) async {
+    // args: [inputString, outputPath, isFileSource]
+    final String input = args[0];
+    final String outputPath = args[1];
+    final bool isFileSource = args[2];
+
+    Uint8List bytes;
+    if (!isFileSource) {
+      bytes = base64Decode(input);
+    } else {
+      final inputFile = File(input);
+      String content = await inputFile.readAsString();
+      content = content.replaceAll(RegExp(r'\s'), '');
+      bytes = base64Decode(content);
+    }
+    await File(outputPath).writeAsBytes(bytes);
   }
 
   // --- DECODER LOGIC ---
@@ -153,25 +208,16 @@ class _UtilsPageState extends State<UtilsPage> {
     setState(() { _isDecoding = true; _decodeStatus = "Decoding..."; });
 
     try {
-      Uint8List bytes;
+      String result;
       if (hasText) {
-        bytes = base64Decode(textInput);
+        result = await compute(_decodeTextWorker, textInput);
       } else {
-        final inputFile = File(_decodeSelectedFilePath!);
-        String content = await inputFile.readAsString();
-        content = content.replaceAll(RegExp(r'\s'), ''); 
-        bytes = base64Decode(content);
+        result = await compute(_decodeFileWorker, _decodeSelectedFilePath!);
       }
-
-      try {
-        String result = utf8.decode(bytes);
-        await Clipboard.setData(ClipboardData(text: result));
-        setState(() => _decodeStatus = "Decoded text copied! (${result.length} chars)");
-      } catch (_) {
-        throw "Result is binary data, not text. Use 'Save to File'.";
-      }
+      await Clipboard.setData(ClipboardData(text: result));
+      setState(() => _decodeStatus = "Decoded text copied! (${result.length} chars)");
     } catch (e) {
-      setState(() => _decodeStatus = "Error: $e");
+      setState(() => _decodeStatus = "Error: Invalid Base64 or Not Text.");
     } finally {
       setState(() => _isDecoding = false);
     }
@@ -194,17 +240,13 @@ class _UtilsPageState extends State<UtilsPage> {
     setState(() { _isDecoding = true; _decodeStatus = "Decoding & Saving..."; });
 
     try {
-      Uint8List bytes;
-      if (hasText) {
-        bytes = base64Decode(textInput);
-      } else {
-        final inputFile = File(_decodeSelectedFilePath!);
-        String content = await inputFile.readAsString();
-        content = content.replaceAll(RegExp(r'\s'), '');
-        bytes = base64Decode(content);
-      }
-
-      await File(outputFile).writeAsBytes(bytes);
+      // Pass arguments as a list because compute only takes one arg
+      await compute(_saveDecodedBytesWorker, [
+        hasText ? textInput : _decodeSelectedFilePath!,
+        outputFile,
+        !hasText // isFileSource
+      ]);
+      
       setState(() => _decodeStatus = "Saved decoded file to $outputFile");
     } catch (e) {
       setState(() => _decodeStatus = "Error: $e");
