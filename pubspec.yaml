@@ -29,6 +29,8 @@ dependencies:
 
   # 🔗 Phase 4: Identity
   url_launcher: ^6.2.5
+  encrypt: ^5.0.3
+  crypto: ^3.0.7
 
 dev_dependencies:
   flutter_test:

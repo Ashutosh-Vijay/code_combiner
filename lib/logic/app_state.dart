@@ -152,8 +152,14 @@ class FileService {
     ));
   }
 
+  // Legacy String Generator (RAM Heavy) - Only for Clipboard
   static Future<String> generateContent(List<FileInfo> files, OutputFormat format) async {
     return await compute(_generateStringWorker, _ProcessArgs(files, format));
+  }
+
+  // New Stream Generator (Disk Safe) - For Saving Files
+  static Future<void> streamToDisk(List<FileInfo> files, OutputFormat format, String outputPath, {String? prependData}) async {
+    await compute(_streamToDiskWorker, _StreamSaveArgs(files, format, outputPath, prependData: prependData));
   }
 
   static Future<String> generateTree(List<FileInfo> files, String rootPath) async {
@@ -460,9 +466,13 @@ class AppState extends ChangeNotifier {
     if (selectedPath == null || files.isEmpty) return;
     
     final filesToProcess = files.where((f) => f.isSelected).toList();
+    
+    // Smart Naming based on format
+    String ext = outputFormat == OutputFormat.markdown ? "md" : (outputFormat == OutputFormat.xml ? "xml" : "txt");
+    
     String? outputFile = await FilePicker.platform.saveFile(
       dialogTitle: 'Save Context File',
-      fileName: 'context.txt',
+      fileName: 'context.$ext',
     );
 
     if (outputFile == null) return;
@@ -471,15 +481,11 @@ class AppState extends ChangeNotifier {
     notifyListeners();
 
     try {
+      // 1. Generate Tree (Small enough to keep in RAM)
       final tree = await FileService.generateTree(filesToProcess, selectedPath!);
-      final content = await FileService.generateContent(filesToProcess, outputFormat);
       
-      final file = File(outputFile);
-      final sink = file.openWrite();
-      sink.write(tree);
-      sink.writeln("\n\n");
-      sink.write(content);
-      await sink.close();
+      // 2. Stream Content + Tree to Disk (Memory Safe)
+      await FileService.streamToDisk(filesToProcess, outputFormat, outputFile, prependData: tree);
       
       if (!context.mounted) return;
       _showDialog(context, "Success", "Saved to: $outputFile");
@@ -527,23 +533,18 @@ class _ProcessArgs {
   _ProcessArgs(this.files, this.format);
 }
 
+class _StreamSaveArgs {
+  final List<FileInfo> files;
+  final OutputFormat format;
+  final String outputPath;
+  final String? prependData;
+  _StreamSaveArgs(this.files, this.format, this.outputPath, {this.prependData});
+}
+
 class _TreeArgs {
   final List<FileInfo> files;
   final String rootPath;
   _TreeArgs(this.files, this.rootPath);
-}
-
-// --- HELPER: Glob Matcher (The Real Deal) ---
-bool _matchesGlob(String text, String pattern) {
-  // Convert basic glob to regex
-  // Escape special regex chars except * and ?
-  var escaped = RegExp.escape(pattern)
-      .replaceAll(r'\*', '.*')
-      .replaceAll(r'\?', '.');
-  
-  // ^ and $ anchors to match whole string
-  final regExp = RegExp('^$escaped\$', caseSensitive: false);
-  return regExp.hasMatch(text);
 }
 
 Future<List<FileInfo>> _scanWorker(_ScanArgs args) async {
@@ -551,6 +552,13 @@ Future<List<FileInfo>> _scanWorker(_ScanArgs args) async {
   List<FileInfo> results = [];
   bool isWindows = Platform.isWindows;
   
+  // Convert basic wildcard patterns to Regex
+  // e.g. "*.log" -> r"^.*\.log$"
+  List<RegExp> regexPatterns = args.excludedPatterns.map((p) {
+    String pattern = RegExp.escape(p).replaceAll(r'\*', '.*').replaceAll(r'\?', '.');
+    return RegExp('^$pattern\$', caseSensitive: false);
+  }).toList();
+
   Set<String> ignoredDirNames = args.excludedFolders
       .map((e) => isWindows ? e.toLowerCase() : e)
       .toSet();
@@ -559,14 +567,14 @@ Future<List<FileInfo>> _scanWorker(_ScanArgs args) async {
       .map((e) => isWindows ? e.toLowerCase() : e)
       .toSet();
 
+  // Add default tech stacks
   if (args.type == ProjectType.muleSoft) {
     ignoredDirNames.addAll(['target', '.mvn', 'catalog']);
   } else if (args.type == ProjectType.python) {
     ignoredDirNames.addAll(['venv', '.venv', 'env', '__pycache__', 'htmlcov', '.pytest_cache']);
   }
 
-  // --- GITIGNORE PARSING (Improved) ---
-  List<String> gitIgnorePatterns = [];
+  // --- GITIGNORE PARSING (Regex Edition) ---
   if (args.useGitIgnore) {
     final gitIgnoreFile = File(p.join(args.dir, '.gitignore'));
     if (gitIgnoreFile.existsSync()) {
@@ -576,83 +584,92 @@ Future<List<FileInfo>> _scanWorker(_ScanArgs args) async {
           line = line.trim();
           if (line.isEmpty || line.startsWith('#')) continue;
           
-          // Basic handling: strip leading slash
-          if (line.startsWith('/')) line = line.substring(1);
-          // If it ends with slash, it's a directory
+          // Handle directory markers
           if (line.endsWith('/')) {
-            ignoredDirNames.add(isWindows ? line.replaceAll('/', '').toLowerCase() : line.replaceAll('/', ''));
-          } else if (!line.contains('*') && !line.contains('!')) {
-            // Simple file/folder name
-             ignoredDirNames.add(isWindows ? line.toLowerCase() : line);
+            String dirName = line.substring(0, line.length - 1);
+            if (dirName.startsWith('/')) dirName = dirName.substring(1);
+            ignoredDirNames.add(isWindows ? dirName.toLowerCase() : dirName);
+            continue;
+          }
+
+          // Handle simple files vs patterns
+          if (!line.contains('*') && !line.contains('?')) {
+             if (line.startsWith('/')) line = line.substring(1);
+             ignoredDirNames.add(isWindows ? line.toLowerCase() : line); // Treat as folder or file name
           } else {
-            // It's a pattern
-            gitIgnorePatterns.add(line);
+             // It's a pattern, add to regex list
+             String pattern = RegExp.escape(line).replaceAll(r'\*', '.*').replaceAll(r'\?', '.');
+             regexPatterns.add(RegExp('^$pattern\$', caseSensitive: false));
           }
         }
-      } catch (_) {}
+      } catch (e) {
+        debugPrint("GitIgnore Parse Error: $e");
+      }
     }
   }
 
-  // --- HELPER: True Binary Check ---
+  // Helper: Binary Check (Null Byte)
   bool isBinary(File f) {
-    RandomAccessFile? raf;
     try {
-      raf = f.openSync();
-      // Read first 8kb. If 0x00 is found, it's binary.
-      final bytes = raf.readSync(8000); 
-      raf.closeSync(); 
+      // Read small chunk to check for null bytes
+      final bytes = f.openSync().readSync(1024); // Only read 1KB
       if (bytes.contains(0)) return true;
       return false;
     } catch (e) {
-      try { raf?.closeSync(); } catch (_) {}
-      return true; // Assume binary if unreadable
+      return true; // If we can't read it, treat as binary/skip
     }
   }
 
   if (dir.existsSync()) {
-    await for (var entity in dir.list(recursive: true, followLinks: false)) {
-      if (entity is File) {
-        String fullPath = entity.path;
-        String comparePath = isWindows ? fullPath.toLowerCase() : fullPath;
-        
-        // 1. Absolute File Exclusion
-        if (ignoredFilePaths.contains(comparePath)) continue;
+    // Recursive List
+    try {
+      await for (var entity in dir.list(recursive: true, followLinks: false)) {
+        if (entity is File) {
+          try {
+            String fullPath = entity.path;
+            String comparePath = isWindows ? fullPath.toLowerCase() : fullPath;
+            
+            // 1. Exact File Exclusion
+            if (ignoredFilePaths.contains(comparePath)) continue;
 
-        String relPath = p.relative(fullPath, from: args.dir);
-        List<String> parts = p.split(relPath);
+            String relPath = p.relative(fullPath, from: args.dir);
+            List<String> parts = p.split(relPath);
 
-        // 2. Folder Exclusion (Name match in path)
-        bool isIgnored = parts.any((part) {
-          String pName = isWindows ? part.toLowerCase() : part;
-          return ignoredDirNames.contains(pName);
-        });
-        if (isIgnored) continue;
+            // 2. Folder Exclusion (Any part of the path matches an ignored folder)
+            bool isIgnored = parts.any((part) {
+              String pName = isWindows ? part.toLowerCase() : part;
+              return ignoredDirNames.contains(pName);
+            });
+            if (isIgnored) continue;
 
-        String name = p.basename(fullPath);
-        
-        // 3. User Patterns
-        bool patternMatched = false;
-        for (var pat in args.excludedPatterns) {
-           if (_matchesGlob(name, pat)) { patternMatched = true; break; }
+            String name = p.basename(fullPath);
+            
+            // 3. Pattern Matching (User + GitIgnore Regex)
+            bool patternMatched = false;
+            for (var reg in regexPatterns) {
+               if (reg.hasMatch(name)) { patternMatched = true; break; }
+            }
+            if (patternMatched) continue;
+            
+            // 4. Config File
+            if (name == ".exclusion_settings.json") continue;
+
+            // 5. Binary Check
+            FileType type = isBinary(entity) ? FileType.binary : FileType.text;
+            
+            results.add(FileInfo(fullPath, entity.lengthSync(), type));
+          } catch (e) {
+            // Found a locked file or permission error? Skip it, don't crash.
+            debugPrint("Skipping file due to error: $e");
+          }
         }
-        if (patternMatched) continue;
-
-        // 4. GitIgnore Patterns
-        for (var pat in gitIgnorePatterns) {
-           if (_matchesGlob(name, pat) || _matchesGlob(relPath, pat)) { patternMatched = true; break; }
-        }
-        if (patternMatched) continue;
-        
-        // 5. Config File
-        if (name == ".exclusion_settings.json") continue;
-
-        // 6. TRUE BINARY CHECK
-        FileType type = isBinary(entity) ? FileType.binary : FileType.text;
-        
-        results.add(FileInfo(fullPath, entity.lengthSync(), type));
       }
+    } catch (e) {
+      debugPrint("Fatal Error during scan: $e");
     }
   }
+  
+  // Sort for clean tree
   results.sort((a, b) => a.path.compareTo(b.path));
   return results;
 }
@@ -701,6 +718,71 @@ Future<String> _generateStringWorker(_ProcessArgs args) async {
   
   if (args.format == OutputFormat.xml) buffer.writeln("</codebase>");
   return buffer.toString();
+}
+
+Future<void> _streamToDiskWorker(_StreamSaveArgs args) async {
+  final file = File(args.outputPath);
+  final sink = file.openWrite(); // Open stream
+  
+  // 1. Write Header / Tree
+  if (args.prependData != null) {
+      sink.writeln(args.prependData);
+      sink.writeln("\n\n");
+  }
+
+  if (args.format == OutputFormat.xml) sink.writeln("<codebase>");
+
+  // 2. Stream Files One by One
+  for (var fileInfo in args.files) {
+    final inputFile = File(fileInfo.path);
+    final displayPath = fileInfo.path; 
+    
+    // Formatting Header
+    if (args.format == OutputFormat.xml) {
+      sink.writeln('<file path="$displayPath">');
+      sink.writeln("<![CDATA[");
+    } else if (args.format == OutputFormat.markdown) {
+      sink.writeln("### File: $displayPath");
+      String ext = p.extension(displayPath).replaceAll('.', '');
+      if (ext.isEmpty) ext = "text";
+      sink.writeln("```$ext");
+    } else {
+      sink.writeln("=" * 80);
+      sink.writeln("File: $displayPath");
+      sink.writeln("=" * 80);
+    }
+
+    // Write Content
+    if (fileInfo.type == FileType.binary) {
+      sink.writeln("[Binary file - content not included]");
+    } else {
+      try {
+        // Stream reading (Don't load whole file to RAM)
+        await inputFile.openRead()
+            .transform(utf8.decoder) // Decode to string
+            .forEach((chunk) {
+              sink.write(chunk); // Write chunk immediately
+            });
+      } catch (e) {
+        sink.writeln("[Error reading file: $e]");
+      }
+    }
+    
+    // Formatting Footer
+    if (args.format == OutputFormat.xml) {
+      sink.writeln("]]>");
+      sink.writeln('</file>');
+    } else if (args.format == OutputFormat.markdown) {
+      sink.writeln("```\n");
+    } else {
+      sink.writeln("\n\n");
+    }
+  }
+  
+  if (args.format == OutputFormat.xml) sink.writeln("</codebase>");
+  
+  await sink.flush();
+  await sink.close();
 }
 
 Future<String> _generateTreeWorker(_TreeArgs args) async {

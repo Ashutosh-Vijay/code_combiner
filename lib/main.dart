@@ -45,7 +45,7 @@ void main() async {
 }
 
 class MyApp extends StatelessWidget {
-  // 3. Store the state
+  // 3. Store the state (THIS WAS LIKELY MISSING)
   final AppState appState;
   
   const MyApp({super.key, required this.appState});
