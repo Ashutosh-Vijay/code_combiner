@@ -1,63 +1,54 @@
-Code Combiner (God Mode)
+# ContextForge
 
-"Stop pasting node_modules into ChatGPT."
+A Windows desktop app for preparing codebases as LLM context. Drop a folder, pick your files, copy a structured dump of your entire codebase — file tree included — ready to paste into Claude, GPT, or whatever you're using.
 
-A high-performance, aesthetically pleasing utility designed to prepare massive codebases for Large Language Model (LLM) context windows. Built with Flutter, Mica/Glass UI, and pure rage against bad tooling.
+Built with Flutter and Windows 11 Mica/Glass UI.
 
-🚀 Features
+---
 
-🧠 Smart Context Management
+## Features
 
-Token Budget Visualizer: Instantly see if your selection fits into 32k/128k context windows.
+**Smart scanning**
+- Recursively scans project folders, skipping binaries, build artifacts, and anything in `.gitignore`
+- Per-project exclusion config saved as `.exclusion_settings.json` alongside your code
+- Project type presets: Standard, MuleSoft, Python, React
 
-Intelligent Scanning: Recursively scans folders while ignoring binary files (.exe, .png) and junk folders (node_modules, .git) by default.
+**Output**
+- Formats: XML (CDATA-wrapped), Markdown, Plain Text
+- Generates a file tree alongside the content
+- Streams large codebases to disk chunk-by-chunk — no RAM spikes
 
-ASCII Tree Generator: Auto-generates a file tree map so the AI understands your project structure.
+**UI**
+- Windows 11 Mica/Acrylic glass chrome
+- Theme flavors: Standard Glass, Pitch Black, Ocean Depth, Cyber Forest
+- Token budget indicator — color-coded estimate of context size
+- Drag & drop folder loading
 
-🎨 "Glass God" UI
+---
 
-Windows 11 Mica Effect: True translucent background integration.
+## Installation
 
-Themed Flavors: Switch between Standard Glass, Pitch Black (OLED), Ocean Depth, and Cyber Forest.
+Download the latest zip from the [Releases](https://github.com/Ashutosh-Vijay/ContextForge/releases) page, extract, and run `ContextForge.exe`. No installer.
 
-Drag & Drop: Yeet a folder onto the window to start scanning immediately.
+**Build from source:**
 
-🛠️ The Utility Belt
-
-Base64 Encoder/Decoder: Process text or files directly to/from Base64 for safe transport.
-
-Token Scratchpad: Quick-paste area to check token counts and strip empty lines.
-
-Multiple Formats: Export context as XML (Claude/Gemini optimized), Markdown, or Plain Text.
-
-📦 Installation
-
-Download the latest release from the Releases Page.
-
-Build from Source:
-
+```bash
 flutter pub get
 flutter run -d windows --release
+```
 
+Requires Flutter SDK with Windows desktop enabled.
 
-⚡ Key Shortcuts
+---
 
-Drag & Drop: Drop any folder to scan it.
+## Exclusions
 
-Toggle Selection: Click list items to include/exclude.
+The app ships with sensible defaults and respects `.gitignore` automatically. You can manage exclusions per-project from the Exclusions tab — folders, file patterns, or specific files.
 
-Exclude Unselected: Banish all unchecked files to the exclusion list permanently.
+Default excluded folders: `node_modules`, `.git`, `build`, `dist`, `.next`, `venv`, `__pycache__`
 
-🛑 Exclusions
+---
 
-The app comes pre-loaded with a list of common "trash" folders (.git, build, dist). You can manage these in the Exclusions tab.
+## License
 
-Defaults: node_modules, venv, .next, __pycache__
-
-GitIgnore: Respects your project's .gitignore automatically.
-
-👤 Author
-
-Ashutosh Vijay
-
-License: MIT
+MIT
