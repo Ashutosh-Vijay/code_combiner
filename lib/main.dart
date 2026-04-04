@@ -39,7 +39,7 @@ void main() async {
     appWindow.minSize = const Size(600, 450);
     appWindow.size = initialSize;
     appWindow.alignment = Alignment.center;
-    appWindow.title = "Code Combiner";
+    appWindow.title = "ContextForge";
     appWindow.show();
   });
 }
@@ -58,7 +58,7 @@ class MyApp extends StatelessWidget {
       child: Consumer<AppState>(
         builder: (context, state, _) {
           return FluentApp(
-            title: 'Code Combiner',
+            title: 'ContextForge',
             themeMode: state.themeMode, 
             debugShowCheckedModeBanner: false,
             darkTheme: AppTheme.getTheme(Brightness.dark, state.useGlass, state.flavor),
@@ -117,7 +117,7 @@ class CustomWindowShell extends StatelessWidget {
                   Icon(FluentIcons.code, size: 14, color: theme.accentColor),
                   const SizedBox(width: 8),
                   // App Title
-                  Text("Code Combiner", style: TextStyle(fontSize: 12, color: theme.resources.textFillColorSecondary)),
+                  Text("ContextForge", style: TextStyle(fontSize: 12, color: theme.resources.textFillColorSecondary)),
                   
                   const SizedBox(width: 16),
                   

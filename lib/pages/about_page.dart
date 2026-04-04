@@ -38,7 +38,7 @@ class AboutPage extends StatelessWidget {
               const SizedBox(height: 16),
               
               const Text(
-                "Code Combiner", 
+                "ContextForge",
                 style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)
               ),
               const SizedBox(height: 8),

@@ -1,4 +1,4 @@
-name: code_combiner
+name: context_forge
 description: "A high-performance, aesthetically pleasing utility designed to prepare massive codebases for Large Language Model (LLM) context windows. Built with Flutter, Mica/Glass UI, and pure rage against bad tooling."
 publish_to: 'none'
 version: 1.0.0+1
