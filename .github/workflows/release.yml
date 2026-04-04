@@ -1,0 +1,119 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build — ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            runner: windows-latest
+            artifact: ContextForge_windows_x64.zip
+          - platform: macos
+            runner: macos-latest
+            artifact: ContextForge_macos.zip
+          - platform: linux
+            runner: ubuntu-latest
+            artifact: ContextForge_linux_x64.zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y \
+            libgtk-3-dev libblkid-dev liblzma-dev \
+            ninja-build cmake pkg-config \
+            libayatana-appindicator3-dev libsecret-1-dev
+
+      - name: Enable desktop
+        run: flutter config --enable-${{ matrix.platform }}-desktop
+
+      - run: flutter pub get
+
+      - name: Build
+        run: flutter build ${{ matrix.platform }} --release
+
+      - name: Package (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath ${{ matrix.artifact }}
+
+      - name: Package (macOS)
+        if: matrix.platform == 'macos'
+        run: |
+          APP=$(find build/macos/Build/Products/Release -maxdepth 1 -name "*.app" | head -1)
+          zip -r "${{ matrix.artifact }}" "$APP"
+
+      - name: Package (Linux)
+        if: matrix.platform == 'linux'
+        run: zip -r ${{ matrix.artifact }} build/linux/x64/release/bundle/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ContextForge ${{ github.ref_name }}
+          files: "*.zip"
+          fail_on_unmatched_files: true
+          body: |
+            ## ContextForge ${{ github.ref_name }}
+
+            Stop pasting files one by one into your LLM. Drop a folder, pick your files, copy your context.
+
+            ### Downloads
+
+            | Platform | File |
+            |---|---|
+            | Windows 10/11 (x64) | `ContextForge_windows_x64.zip` |
+            | macOS | `ContextForge_macos.zip` |
+            | Linux (x64) | `ContextForge_linux_x64.zip` |
+
+            **Windows** — Extract and run `ContextForge.exe`. No installer required.
+
+            **macOS** — Extract and move `ContextForge.app` to Applications. First launch: right-click → Open (Gatekeeper warning, unsigned build).
+
+            **Linux** — Extract and run the `context_forge` binary from the bundle folder.
+
+            ---
+
+            ### Features
+            - Smart codebase scanning with GitIgnore support
+            - Per-project exclusion config (`.exclusion_settings.json`)
+            - Token budget visualizer
+            - Output formats: XML, Markdown, Plain Text
+            - File tree generation
+            - Memory-safe streaming for large codebases
+            - Windows 11 Mica/Acrylic glass UI with theme flavors
+            - Drag & drop folder loading
